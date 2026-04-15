@@ -28,6 +28,7 @@
 //    Then run via: Script > Utilities > AstroMaxClarity
 //
 //  Changelog:
+//    v3.0.0 — Dual image selector (Starless+Stars). Star blend via direct Image API.
 //    v2.0.0 — Stable release. Removed NR (requires external plugin).
 //             Clarity via MultiscaleLinearTransform LCE.
 //             Luminance sharpening via L-ratio method.
@@ -39,7 +40,7 @@
 #feature-info  Tone-zone clarity and luminance sharpening for PixInsight.<br/>\
                Copyright &copy; 2026 Dean Linic
 
-var AMC_VERSION = "2.0.0";
+var AMC_VERSION = "3.6.0";
 
 // ============================================================
 //  HIDDEN WINDOW POOL
@@ -86,16 +87,22 @@ function copyWin(dst,src){
 //  IMAGE UTILITIES
 // ============================================================
 function cloneImg(src){
-   var d=new Image(src.width,src.height,src.numberOfChannels,
-                   src.colorSpace,src.bitsPerSample,src.sampleType);
-   d.assign(src); return d;
+   // new Image(src) = PJSR copy constructor — guaranteed pixel copy
+   return new Image(src);
 }
 
 function scaleImage(img,f){
-   var nw=Math.max(1,Math.round(img.width*f));
-   var nh=Math.max(1,Math.round(img.height*f));
-   var out=new Image(nw,nh,img.numberOfChannels,img.colorSpace,img.bitsPerSample,img.sampleType);
-   out.assign(img); out.resample(f); return out;
+   var out=new Image(img);
+   out.resample(f);
+   return out;
+}
+
+// Resize to EXACT pixel dimensions — no rounding mismatch
+function resizeTo(img, w, h){
+   var out=new Image(img);
+   if(out.width!==w||out.height!==h)
+      out.resizeTo(w, h, 1);   // 1=bilinear
+   return out;
 }
 
 // ============================================================
@@ -244,6 +251,9 @@ function processImage(src,p){
    // Luminance sharpening last
    applyLumSharpening(baseWin,shpWin,lumWin,p.lumSharpSigma,p.lumSharpAmount,p.lumSharpThreshold);
 
+   // Star recomposition (screen blend stars onto result)
+
+
    return getImg(baseWin);
 }
 
@@ -321,6 +331,51 @@ function renderZoom(img,cx,cy,level,W,H){
    return bmp;
 }
 
+
+// ============================================================
+//  STAR BLEND — screen blend with MTF control
+//
+//  Matches PixelMath formula: ~(~$T * ~mtf(m, Stars))
+//
+//  slider=0   → m=0.999 → stars invisible (MTF dims them)
+//  slider=50  → m=0.500 → stars exactly as-is (identity)
+//  slider=100 → m=0.001 → stars very bright
+//
+//  KEY: stars are read using NORMALIZED coordinates so they
+//  always align correctly regardless of their resolution.
+//  No pre-scaling of stars image needed.
+//
+//  MTF: lower m = brighter, higher m = darker (PI convention)
+// ============================================================
+function mtf(m, x) {
+   if(x<=0) return 0;
+   if(x>=1) return 1;
+   if(Math.abs(m-0.5)<1e-6) return x;
+   return (m-1)*x / ((2*m-1)*x - m);
+}
+
+function blendStarsOnImage(base, stars, sliderVal) {
+   if(sliderVal < 0.1) return;
+   // INVERTED: slider right = brighter = lower m
+   var m = 0.999 - (sliderVal/100.0) * 0.998;
+   var bw=base.width, bh=base.height, nc=base.numberOfChannels;
+   var sw=stars.width, sh=stars.height, snc=stars.numberOfChannels;
+   for(var c=0;c<nc;c++){
+      var sc=Math.min(c,snc-1);
+      for(var y=0;y<bh;y++){
+         // Normalized coords → read from stars at proportional position
+         // This works regardless of stars vs base resolution
+         var sy=Math.min(sh-1, Math.round(y*(sh-1)/(bh-1)));
+         for(var x=0;x<bw;x++){
+            var sx=Math.min(sw-1, Math.round(x*(sw-1)/(bw-1)));
+            var b=base.sample(x,y,c);
+            var s=mtf(m, stars.sample(sx,sy,sc));
+            base.setSample(1-(1-b)*(1-s), x, y, c);
+         }
+      }
+   }
+}
+
 // ============================================================
 //  DIALOG
 // ============================================================
@@ -342,22 +397,32 @@ function AstroMaxClarityDialog(){
    }
    if(this.imageWindows.length===0){this.srcView=null;return;}
 
-   this.srcWin=this.imageWindows[0];
-   this.srcView=this.srcWin.mainView;
-   this.origImg=cloneImg(this.srcView.image);
+   // Starless image (main)
+   this.starlessWin    = this.imageWindows[0];
+   this.starlessOrig   = cloneImg(this.starlessWin.mainView.image);
+   // Stars image (optional second selection)
+   this.starsOrig      = null;
+   this.starsPreview   = null;
+
+   // Keep srcWin/srcView/origImg aliases for processImage compatibility
+   this.srcWin  = this.starlessWin;
+   this.srcView = this.starlessWin.mainView;
+   this.origImg = this.starlessOrig;
+
    this.busy=false;
    this.needsRefresh=false;
 
    var SCALE=0.25;
    this.SCALE=SCALE;
-   this.previewImg=scaleImage(this.origImg,SCALE);
+   this.previewImg=scaleImage(this.starlessOrig,SCALE);
 
    this.p={
       clarityS:0,widthS:40,
       clarityM:0,widthM:50,
       clarityH:0,widthH:40,
       sigma:5.0,
-      lumSharpAmount:0,lumSharpSigma:1.5,lumSharpThreshold:5
+      lumSharpAmount:0,lumSharpSigma:1.5,lumSharpThreshold:5,
+      starsBlend:0
    };
 
    this.lastRes=null;
@@ -453,23 +518,57 @@ function AstroMaxClarityDialog(){
       return g;
    }
 
-   var imgLbl=new Label(this);imgLbl.text="Image:";imgLbl.minWidth=45;
-   this.imgCombo=new ComboBox(this);
+   // ── Starless selector ─────────────────────────────────────
+   var slLbl=new Label(this); slLbl.text="Starless:"; slLbl.minWidth=55;
+   this.starlessCombo=new ComboBox(this); this.starlessCombo.minWidth=160;
    for(var i=0;i<this.imageWindows.length;i++)
-      this.imgCombo.addItem(this.imageWindows[i].mainView.id);
-   this.imgCombo.currentItem=0;
-   this.imgCombo.onItemSelected=function(idx){
-      self.srcWin=self.imageWindows[idx];self.srcView=self.srcWin.mainView;
-      self.origImg=cloneImg(self.srcView.image);
-      self.previewImg=scaleImage(self.origImg,self.SCALE);
-      closeAllWins();self.zoomMode=false;self.btnZoomReset.enabled=false;
-      var nPW=700,nPH=Math.round(700*self.origImg.height/self.origImg.width);
-      if(nPH>560){nPH=560;nPW=Math.round(nPH*self.origImg.width/self.origImg.height);}
-      self.PW=nPW;self.PH=nPH;
-      self.canvas.setFixedSize(nPW,nPH);self.adjustToContents();self.doRefresh();
+      this.starlessCombo.addItem(this.imageWindows[i].mainView.id);
+   this.starlessCombo.currentItem=0;
+   this.starlessCombo.onItemSelected=function(idx){
+      self.starlessWin  = self.imageWindows[idx];
+      self.srcWin       = self.starlessWin;
+      self.srcView      = self.starlessWin.mainView;
+      self.starlessOrig = new Image(self.starlessWin.mainView.image);
+      self.origImg      = self.starlessOrig;
+      self.previewImg   = scaleImage(self.starlessOrig, self.SCALE);
+      // Re-scale stars to match new starless dimensions
+      if(self.starsOrig !== null)
+         self.starsPreview = self.starsOrig;
+      closeAllWins(); self.zoomMode=false; self.btnZoomReset.enabled=false;
+      var nPW=700, nPH=Math.round(700*self.starlessOrig.height/self.starlessOrig.width);
+      if(nPH>560){nPH=560;nPW=Math.round(nPH*self.starlessOrig.width/self.starlessOrig.height);}
+      self.PW=nPW; self.PH=nPH;
+      self.canvas.setFixedSize(nPW,nPH); self.adjustToContents(); self.doRefresh();
    };
-   var imgRow=new Sizer(false);imgRow.spacing=6;
-   imgRow.add(imgLbl);imgRow.add(this.imgCombo);imgRow.addStretch();
+
+   // ── Stars selector ─────────────────────────────────────────
+   var stLbl=new Label(this); stLbl.text="Stars:"; stLbl.minWidth=40;
+   this.starsCombo=new ComboBox(this); this.starsCombo.minWidth=160;
+   this.starsCombo.addItem("-- none --");
+   for(var i=0;i<this.imageWindows.length;i++)
+      this.starsCombo.addItem(this.imageWindows[i].mainView.id);
+   this.starsCombo.currentItem=0;
+   this.starsCombo.onItemSelected=function(idx){
+      if(idx===0){
+         self.starsOrig=null; self.starsPreview=null;
+         // Reset blend slider to 0 when deselected
+         self.slStarsBlend.setValue(0);
+         self.p.starsBlend=0;
+      } else {
+         // Store full-res stars — blend uses normalized coords, no pre-scaling needed
+         self.starsOrig     = new Image(self.imageWindows[idx-1].mainView.image);
+         self.starsPreview  = self.starsOrig;   // same image, blend handles scaling
+         // Set default blend to 50% and immediately show result
+         self.slStarsBlend.setValue(50);
+         self.p.starsBlend=50;
+      }
+      self.doRefresh();
+   };
+
+   var imgRow=new Sizer(false); imgRow.spacing=8;
+   imgRow.add(slLbl); imgRow.add(this.starlessCombo);
+   imgRow.add(stLbl); imgRow.add(this.starsCombo);
+   imgRow.addStretch();
 
    var zHint=new Label(this);zHint.text="Drag on preview to zoom  \u00B7  Release slider to update";
    this.btnZoomReset=new PushButton(this);
@@ -513,6 +612,33 @@ function AstroMaxClarityDialog(){
    this.g3.sizer.add(this.slLumSharpSigma);
    this.g3.sizer.add(this.slLumSharpThreshold);
 
+   this.g5=mkGroup("5 \u00B7 Stars blend");
+   // Stars slider uses its own mkSlider that fires doRefresh on every move
+   // (same pattern as EasyStretch General Stretch)
+   var starsSliderLbl=new Label(self);
+   starsSliderLbl.text="Stars MTF amount:"; starsSliderLbl.minWidth=185;
+   this.sldStars=new Slider(self); this.sldStars.minWidth=170; this.sldStars.setRange(0,500);
+   this.edtStars=new Edit(self); this.edtStars.readOnly=true;
+   this.edtStars.minWidth=58; this.edtStars.maxWidth=58;
+   this.edtStars.text="0.0";
+   this.sldStars.value=0;
+   this.sldStars.onValueUpdated=function(s){
+      var v=parseFloat((s/500*100).toFixed(1));
+      self.edtStars.text=v.toFixed(1);
+      self.p.starsBlend=v;
+      self.doRefresh();
+   };
+   var starsRow2=new Sizer(false); starsRow2.spacing=4;
+   starsRow2.add(starsSliderLbl); starsRow2.add(this.sldStars); starsRow2.add(this.edtStars);
+   // setValue helper
+   this.slStarsBlend={
+      setValue:function(v){
+         self.sldStars.value=Math.round(v/100*500);
+         self.edtStars.text=v.toFixed(1);
+         self.p.starsBlend=v;
+      }
+   };
+   this.g5.sizer.add(starsRow2);
 
    this.btnReset=new PushButton(this);this.btnReset.text="\u21BA  Reset";
    this.btnReset.onClick=function(){
@@ -522,7 +648,7 @@ function AstroMaxClarityDialog(){
       self.slSigma.setValue(5.0);
       self.slLumSharpAmount.setValue(0);   self.slLumSharpSigma.setValue(1.5);
       self.slLumSharpThreshold.setValue(5);
-      self.doRefresh();
+      self.slStarsBlend.setValue(0); self.doRefresh();
    };
 
    this.btnApply=new PushButton(this);this.btnApply.text="\u25B6  Apply & Continue";
@@ -536,7 +662,13 @@ function AstroMaxClarityDialog(){
    this.btnCreate=new PushButton(this);this.btnCreate.text="\u2705  Create New Image";
    this.btnCreate.toolTip="Apply all parameters and create new image. Original untouched.";
    this.btnCreate.onClick=function(){
-      var res=processImage(self.origImg,self.p);
+      var res=processImage(self.starlessOrig,self.p);
+      // Blend full-resolution stars
+      if(self.starsOrig!==null && self.p.starsBlend>0.5){
+         // starsOrig is always full-res; blend uses normalized coords
+         var starsFullRes=self.starsOrig;
+         blendStarsOnImage(res, starsFullRes, self.p.starsBlend);
+      }
       var nid=self.srcView.id+"_AstroMaxClarity";
       var nw=new ImageWindow(res.width,res.height,res.numberOfChannels,
                              res.bitsPerSample,res.isReal,res.numberOfChannels>1,nid);
@@ -555,7 +687,7 @@ function AstroMaxClarityDialog(){
    var ctrlPanel=new Sizer(true);ctrlPanel.spacing=6;
    ctrlPanel.add(imgRow);ctrlPanel.add(zRow);
    ctrlPanel.add(this.g1);ctrlPanel.add(this.g2);
-   ctrlPanel.add(this.g3);
+   ctrlPanel.add(this.g3);ctrlPanel.add(this.g5);
    ctrlPanel.addStretch();ctrlPanel.add(btnRow);
 
    var mainRow=new Sizer(false);mainRow.spacing=8;
@@ -588,7 +720,12 @@ AstroMaxClarityDialog.prototype.doRefresh=function(){
    if(this.busy)return;
    this.busy=true;
    try{
-      this.lastRes=processImage(this.previewImg,this.p);
+      var res=processImage(this.previewImg,this.p);
+      // Blend stars directly onto result Image — no windows, no PixelMath
+      if(this.starsPreview!==null && this.p.starsBlend>0.5){
+         blendStarsOnImage(res, this.starsPreview, this.p.starsBlend);
+      }
+      this.lastRes=res;
       this.renderPreview();
    }catch(e){
       Console.writeln("AstroMaxClarity error: "+e);
@@ -604,3 +741,4 @@ function main(){
 }
 
 main();
+
