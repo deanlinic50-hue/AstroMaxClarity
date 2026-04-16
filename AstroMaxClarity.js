@@ -40,7 +40,7 @@
 #feature-info  Tone-zone clarity and luminance sharpening for PixInsight.<br/>\
                Copyright &copy; 2026 Dean Linic
 
-var AMC_VERSION = "3.6.0";
+var AMC_VERSION = "3.7.0";
 
 // ============================================================
 //  HIDDEN WINDOW POOL
@@ -354,22 +354,37 @@ function mtf(m, x) {
    return (m-1)*x / ((2*m-1)*x - m);
 }
 
-function blendStarsOnImage(base, stars, sliderVal) {
+function blendStarsOnImage(base, stars, sliderVal, starsSat) {
    if(sliderVal < 0.1) return;
-   // INVERTED: slider right = brighter = lower m
+   if(starsSat===undefined) starsSat=0;
    var m = 0.999 - (sliderVal/100.0) * 0.998;
    var bw=base.width, bh=base.height, nc=base.numberOfChannels;
    var sw=stars.width, sh=stars.height, snc=stars.numberOfChannels;
-   for(var c=0;c<nc;c++){
-      var sc=Math.min(c,snc-1);
-      for(var y=0;y<bh;y++){
-         // Normalized coords → read from stars at proportional position
-         // This works regardless of stars vs base resolution
-         var sy=Math.min(sh-1, Math.round(y*(sh-1)/(bh-1)));
-         for(var x=0;x<bw;x++){
-            var sx=Math.min(sw-1, Math.round(x*(sw-1)/(bw-1)));
+   var satFactor = 1.0 + (starsSat / 100.0);   // 0→1.0, +100→2.0, -100→0
+   for(var y=0;y<bh;y++){
+      var sy=Math.min(sh-1, Math.round(y*(sh-1)/(bh-1)));
+      for(var x=0;x<bw;x++){
+         var sx=Math.min(sw-1, Math.round(x*(sw-1)/(bw-1)));
+         // Read star pixel (all channels at once for saturation)
+         var sr, sg, sb_v;
+         if(snc===1){
+            sr=sg=sb_v=stars.sample(sx,sy,0);
+         } else {
+            sr=stars.sample(sx,sy,0);
+            sg=stars.sample(sx,sy,1);
+            sb_v=stars.sample(sx,sy,2);
+         }
+         // Apply saturation to stars: lum + (channel-lum)*satFactor
+         var lum=0.2126*sr+0.7152*sg+0.0722*sb_v;
+         sr=Math.max(0,Math.min(1, lum+(sr-lum)*satFactor));
+         sg=Math.max(0,Math.min(1, lum+(sg-lum)*satFactor));
+         sb_v=Math.max(0,Math.min(1, lum+(sb_v-lum)*satFactor));
+         // Apply MTF and screen blend per channel
+         var chans=[sr,sg,sb_v];
+         for(var c=0;c<nc;c++){
+            var sc=Math.min(c,snc-1);
             var b=base.sample(x,y,c);
-            var s=mtf(m, stars.sample(sx,sy,sc));
+            var s=mtf(m, chans[sc]);
             base.setSample(1-(1-b)*(1-s), x, y, c);
          }
       }
@@ -422,7 +437,7 @@ function AstroMaxClarityDialog(){
       clarityH:0,widthH:40,
       sigma:5.0,
       lumSharpAmount:0,lumSharpSigma:1.5,lumSharpThreshold:5,
-      starsBlend:0
+      starsBlend:0, starsSat:0
    };
 
    this.lastRes=null;
@@ -640,6 +655,25 @@ function AstroMaxClarityDialog(){
    };
    this.g5.sizer.add(starsRow2);
 
+   // Stars saturation slider
+   var satLbl=new Label(self);
+   satLbl.text="Stars saturation:"; satLbl.minWidth=185;
+   this.sldStarsSat=new Slider(self); this.sldStarsSat.minWidth=170; this.sldStarsSat.setRange(0,500);
+   this.edtStarsSat=new Edit(self); this.edtStarsSat.readOnly=true;
+   this.edtStarsSat.minWidth=58; this.edtStarsSat.maxWidth=58;
+   this.edtStarsSat.text="0";
+   this.sldStarsSat.value=250;   // centre = 0
+   this.sldStarsSat.onValueUpdated=function(s){
+      // map 0-500 → -100..+100
+      var v=Math.round((s-250)/250*100);
+      self.edtStarsSat.text=v.toString();
+      self.p.starsSat=v;
+      self.doRefresh();
+   };
+   var satRow=new Sizer(false); satRow.spacing=4;
+   satRow.add(satLbl); satRow.add(this.sldStarsSat); satRow.add(this.edtStarsSat);
+   this.g5.sizer.add(satRow);
+
    this.btnReset=new PushButton(this);this.btnReset.text="\u21BA  Reset";
    this.btnReset.onClick=function(){
       self.slClarityS.setValue(0);         self.slWidthS.setValue(40);
@@ -648,7 +682,9 @@ function AstroMaxClarityDialog(){
       self.slSigma.setValue(5.0);
       self.slLumSharpAmount.setValue(0);   self.slLumSharpSigma.setValue(1.5);
       self.slLumSharpThreshold.setValue(5);
-      self.slStarsBlend.setValue(0); self.doRefresh();
+      self.slStarsBlend.setValue(0);
+      self.sldStarsSat.value=250; self.p.starsSat=0; self.edtStarsSat.text='0';
+      self.doRefresh();
    };
 
    this.btnApply=new PushButton(this);this.btnApply.text="\u25B6  Apply & Continue";
@@ -667,7 +703,7 @@ function AstroMaxClarityDialog(){
       if(self.starsOrig!==null && self.p.starsBlend>0.5){
          // starsOrig is always full-res; blend uses normalized coords
          var starsFullRes=self.starsOrig;
-         blendStarsOnImage(res, starsFullRes, self.p.starsBlend);
+         blendStarsOnImage(res, starsFullRes, self.p.starsBlend, self.p.starsSat);
       }
       var nid=self.srcView.id+"_AstroMaxClarity";
       var nw=new ImageWindow(res.width,res.height,res.numberOfChannels,
@@ -723,7 +759,7 @@ AstroMaxClarityDialog.prototype.doRefresh=function(){
       var res=processImage(this.previewImg,this.p);
       // Blend stars directly onto result Image — no windows, no PixelMath
       if(this.starsPreview!==null && this.p.starsBlend>0.5){
-         blendStarsOnImage(res, this.starsPreview, this.p.starsBlend);
+         blendStarsOnImage(res, this.starsPreview, this.p.starsBlend, this.p.starsSat);
       }
       this.lastRes=res;
       this.renderPreview();
