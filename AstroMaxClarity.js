@@ -658,7 +658,12 @@ function AstroMaxClarityDialog(){
    this.PW=PW;this.PH=PH;
 
    this.canvas=new Control(this);
-   this.canvas.setFixedSize(PW,PH);
+   this.canvas.setMinSize(PW,PH);
+   this.canvas.onResize = function(wNew, hNew) {
+      self.PW = wNew; self.PH = hNew;
+      if (self.lastRes !== null) self.renderPreview();
+      else self.canvas.repaint();
+   };
 
    this.canvas.onPaint=function(){
       var g=new VectorGraphics(self.canvas);
@@ -758,7 +763,7 @@ function AstroMaxClarityDialog(){
       var nPW=700, nPH=Math.round(700*self.starlessOrig.height/self.starlessOrig.width);
       if(nPH>560){nPH=560;nPW=Math.round(nPH*self.starlessOrig.width/self.starlessOrig.height);}
       self.PW=nPW; self.PH=nPH;
-      self.canvas.setFixedSize(nPW,nPH); self.adjustToContents(); self.doRefresh();
+      self.canvas.setMinSize(nPW,nPH); self.adjustToContents(); self.doRefresh();
    };
 
    // ── Stars selector ─────────────────────────────────────────
@@ -937,7 +942,7 @@ function AstroMaxClarityDialog(){
    ctrlPanel.addStretch();ctrlPanel.add(btnRow);
 
    var mainRow=new Sizer(false);mainRow.spacing=8;
-   mainRow.add(this.canvas);mainRow.add(ctrlPanel);
+   mainRow.add(this.canvas,100);mainRow.add(ctrlPanel,0);
 
    this.sizer=new Sizer(true);this.sizer.margin=8;
    this.sizer.add(mainRow);
