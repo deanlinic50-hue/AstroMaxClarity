@@ -38,27 +38,20 @@
 
 #feature-id    Utilities > AstroMaxClarity
 #feature-info  Tone-zone clarity and luminance sharpening for PixInsight.<br/>\
-               Copyright &copy; 2026 Dean Linic
-
-var AMC_VERSION = "3.7.0";
 
 // ============================================================
-//  LICENSE & TRIAL SYSTEM
-//  Copyright (C) 2026 Dean Linic
-//
-//  30-day free trial from first run.
-//  After trial, activation key required.
-//  Purchase at: https://astromax.app
-//
-//  Key format: XXXX-XXXX-XXXX-XXXX-XXXX
-//  Generate keys with keygen.js: node keygen.js <HWID>
+//  LICENSE & TRIAL SYSTEM  (HWID-based, SHA-256 validation)
+//  Trial: 30 days from first run, shared across all AstroMax scripts
+//  Key:   sha256(HWID + "|ASTROMAX-V1|" + SECRET)[0..19] in 5x4 hex groups
 // ============================================================
+var LIC_PRODUCT_NAME = "AstroMaxClarity";
+var LIC_SETTINGS_KEY = "/AstroMax/AstroMaxClarity/licenseKey";
+var LIC_TRIAL_KEY    = "/AstroMax/trialStart";
+var LIC_HWID_KEY     = "/AstroMax/hwid";
+var LIC_TRIAL_DAYS   = 30;
+var LIC_SECRET       = "AstroMax2025#Nebula$7x9qK!mP";
 
-var AMC_TRIAL_DAYS = 30;
-var AMC_SECRET     = "AstroMax2025#Nebula$7x9qK!mP";
-
-// ── SHA-256 in pure JS (no Node.js crypto needed) ────────────────────────────
-// Based on RFC 6234 / FIPS 180-4
+// ── Compact SHA-256 (pure JS, no dependencies) ─────────────
 function licSHA256(str) {
    function rr(x,n){return(x>>>n)|(x<<(32-n));}
    var K=[0x428a2f98,0x71374491,0xb5c0fbcf,0xe9b5dba5,0x3956c25b,0x59f111f1,0x923f82a4,0xab1c5ed5,
@@ -69,214 +62,190 @@ function licSHA256(str) {
           0xa2bfe8a1,0xa81a664b,0xc24b8b70,0xc76c51a3,0xd192e819,0xd6990624,0xf40e3585,0x106aa070,
           0x19a4c116,0x1e376c08,0x2748774c,0x34b0bcb5,0x391c0cb3,0x4ed8aa4a,0x5b9cca4f,0x682e6ff3,
           0x748f82ee,0x78a5636f,0x84c87814,0x8cc70208,0x90befffa,0xa4506ceb,0xbef9a3f7,0xc67178f2];
-   var bytes=[];
+   var H=[0x6a09e667,0xbb67ae85,0x3c6ef372,0xa54ff53a,
+          0x510e527f,0x9b05688c,0x1f83d9ab,0x5be0cd19];
+   // UTF-8 encode
+   var b=[];
    for(var i=0;i<str.length;i++){
       var c=str.charCodeAt(i);
-      if(c<128) bytes.push(c);
-      else if(c<2048){bytes.push(0xC0|(c>>6));bytes.push(0x80|(c&63));}
-      else{bytes.push(0xE0|(c>>12));bytes.push(0x80|((c>>6)&63));bytes.push(0x80|(c&63));}
+      if(c<0x80)b.push(c);
+      else if(c<0x800){b.push(0xC0|(c>>6));b.push(0x80|(c&0x3F));}
+      else{b.push(0xE0|(c>>12));b.push(0x80|((c>>6)&0x3F));b.push(0x80|(c&0x3F));}
    }
-   var l=bytes.length;
-   bytes.push(0x80);
-   while(bytes.length%64!==56) bytes.push(0);
-   var bl=l*8;
-   for(var s=56;s>=0;s-=8) bytes.push((bl/Math.pow(2,s))&0xFF);
-   var h=[0x6a09e667,0xbb67ae85,0x3c6ef372,0xa54ff53a,0x510e527f,0x9b05688c,0x1f83d9ab,0x5be0cd19];
-   for(var b=0;b<bytes.length;b+=64){
-      var w=[];
-      for(var j=0;j<16;j++) w[j]=(bytes[b+j*4]<<24)|(bytes[b+j*4+1]<<16)|(bytes[b+j*4+2]<<8)|bytes[b+j*4+3];
-      for(var j=16;j<64;j++){var s0=rr(w[j-15],7)^rr(w[j-15],18)^(w[j-15]>>>3);var s1=rr(w[j-2],17)^rr(w[j-2],19)^(w[j-2]>>>10);w[j]=(w[j-16]+s0+w[j-7]+s1)&0xFFFFFFFF;}
-      var a=h[0],bv=h[1],c2=h[2],d=h[3],e=h[4],f=h[5],g=h[6],hv=h[7];
-      for(var j=0;j<64;j++){
-         var S1=rr(e,6)^rr(e,11)^rr(e,25);var ch=(e&f)^((~e)&g);var t1=(hv+S1+ch+K[j]+w[j])&0xFFFFFFFF;
-         var S0=rr(a,2)^rr(a,13)^rr(a,22);var maj=(a&bv)^(a&c2)^(bv&c2);var t2=(S0+maj)&0xFFFFFFFF;
-         hv=g;g=f;f=e;e=(d+t1)&0xFFFFFFFF;d=c2;c2=bv;bv=a;a=(t1+t2)&0xFFFFFFFF;
+   var bl=b.length*8;
+   b.push(0x80);
+   while(b.length%64!==56)b.push(0);
+   for(var i=7;i>=0;i--)b.push((bl/Math.pow(2,i*8))&0xFF);
+   // Process blocks
+   for(var blk=0;blk<b.length;blk+=64){
+      var W=[];
+      for(var i=0;i<16;i++)
+         W[i]=(b[blk+i*4]<<24)|(b[blk+i*4+1]<<16)|(b[blk+i*4+2]<<8)|b[blk+i*4+3];
+      for(var i=16;i<64;i++){
+         var s0=rr(W[i-15],7)^rr(W[i-15],18)^(W[i-15]>>>3);
+         var s1=rr(W[i-2],17)^rr(W[i-2],19)^(W[i-2]>>>10);
+         W[i]=(W[i-16]+s0+W[i-7]+s1)>>>0;
       }
-      h[0]=(h[0]+a)&0xFFFFFFFF;h[1]=(h[1]+bv)&0xFFFFFFFF;h[2]=(h[2]+c2)&0xFFFFFFFF;h[3]=(h[3]+d)&0xFFFFFFFF;
-      h[4]=(h[4]+e)&0xFFFFFFFF;h[5]=(h[5]+f)&0xFFFFFFFF;h[6]=(h[6]+g)&0xFFFFFFFF;h[7]=(h[7]+hv)&0xFFFFFFFF;
+      var a=H[0],b_=H[1],c=H[2],d=H[3],e=H[4],f=H[5],g=H[6],h=H[7];
+      for(var i=0;i<64;i++){
+         var S1=rr(e,6)^rr(e,11)^rr(e,25);
+         var ch=(e&f)^(~e&g);
+         var t1=(h+S1+ch+K[i]+W[i])>>>0;
+         var S0=rr(a,2)^rr(a,13)^rr(a,22);
+         var mj=(a&b_)^(a&c)^(b_&c);
+         var t2=(S0+mj)>>>0;
+         h=g;g=f;f=e;e=(d+t1)>>>0;d=c;c=b_;b_=a;a=(t1+t2)>>>0;
+      }
+      H[0]=(H[0]+a)>>>0;H[1]=(H[1]+b_)>>>0;H[2]=(H[2]+c)>>>0;H[3]=(H[3]+d)>>>0;
+      H[4]=(H[4]+e)>>>0;H[5]=(H[5]+f)>>>0;H[6]=(H[6]+g)>>>0;H[7]=(H[7]+h)>>>0;
    }
    var hex="";
-   for(var i=0;i<8;i++){var s=h[i].toString(16);while(s.length<8)s="0"+s;hex+=s;}
+   for(var i=0;i<8;i++)hex+=("00000000"+H[i].toString(16)).slice(-8);
    return hex.toUpperCase();
 }
 
-// ── Storage helpers (PixInsight Settings API) ────────────────────────────────
-function licRead(key) {
-   try { return Settings.read(key, DataType_String) || null; } catch(e) { return null; }
-}
-function licWrite(key, val) {
-   try { Settings.write(key, DataType_String, val); } catch(e) {}
-}
-
-// ── Get machine HWID from PixInsight ─────────────────────────────────────────
+// ── HWID — username + computername from env vars ───────────
 function licGetHWID() {
-   // Prioritet 1: CoreApplication.uniqueId — PixInsight machine-specific ID
-   try {
-      var uid = CoreApplication.uniqueId || "";
-      if (uid.length >= 8) {
-         var hwid = uid.substring(0, 16).toUpperCase();
-         licWrite("ASTROMAX_HWID", hwid);
-         return hwid;
-      }
-   } catch(e) {}
-
-   // Prioritet 2: Prethodno spremljeni ID
-   var stored = licRead("ASTROMAX_HWID");
-   if (stored && stored.length >= 8) return stored;
-
-   // Fallback: generiraj i spremi random ID
-   var rand = licSHA256(String(Date.now()) + Math.random()).substring(0, 16);
-   licWrite("ASTROMAX_HWID", rand);
-   return rand;
+   var user = getEnvironmentVariable("USERNAME") || getEnvironmentVariable("USER") || "";
+   var host = getEnvironmentVariable("COMPUTERNAME") || getEnvironmentVariable("HOSTNAME") || "";
+   var raw  = (user + "_" + host).toUpperCase().replace(/[^A-Z0-9_]/g,"");
+   if (raw.length >= 4) {
+      // Store once for consistency
+      if (!Settings.read(LIC_HWID_KEY, 13))
+         Settings.write(LIC_HWID_KEY, 13, raw);
+      return raw;
+   }
+   // Fallback: random ID stored in settings
+   var stored = Settings.read(LIC_HWID_KEY, 13);
+   if (stored && stored.length >= 4) return stored;
+   var id = ""; var hx = "0123456789ABCDEF";
+   for (var i = 0; i < 16; i++) id += hx[Math.floor(Math.random()*16)];
+   Settings.write(LIC_HWID_KEY, 13, id);
+   return id;
 }
 
-// ── Key validation — same algorithm as keygen.js ─────────────────────────────
-// keygen.js: SHA256(hwid + "|ASTROMAX-V1|" + SECRET).hex.upper.substr(0,20) → XXXX-XXXX-XXXX-XXXX-XXXX
+// ── Key validation ─────────────────────────────────────────
+function licKeyForHWID(hwid) {
+   var hash = licSHA256(hwid.trim().toUpperCase() + "|ASTROMAX-V1|" + LIC_SECRET);
+   var groups = [];
+   for (var i = 0; i < 20; i += 4) groups.push(hash.substring(i, i+4));
+   return groups.join("-");
+}
+
 function licValidateKey(key) {
    if (!key) return false;
-   key = key.trim().toUpperCase().replace(/\s/g, "");
    var hwid = licGetHWID();
-   var expected = licSHA256(hwid + "|ASTROMAX-V1|" + AMC_SECRET).substring(0, 20);
-   // Format expected as XXXX-XXXX-XXXX-XXXX-XXXX
-   var parts = expected.match(/.{4}/g);
-   if (!parts || parts.length < 5) return false;
-   var expectedFormatted = parts.join("-");
-   // Also accept without dashes
-   return key === expectedFormatted || key.replace(/-/g, "") === expected;
+   var expected = licKeyForHWID(hwid);
+   return key.trim().toUpperCase().replace(/\s/g,"") === expected.replace(/-/g,"").substring(0,20)
+          || key.trim().toUpperCase() === expected;
 }
 
-// ── Trial / license check ────────────────────────────────────────────────────
-function licCheck(scriptKey) {
-   // 1. Check for valid activation key
-   var storedKey = licRead(scriptKey + "_key");
-   if (licValidateKey(storedKey)) return { ok: true, mode: "licensed" };
-
-   // 2. Trial — first run date stored as UTC days since epoch
-   var nowDays = Math.floor(Date.now() / 86400000);
-   var firstRun = parseInt(licRead(scriptKey + "_first") || "0");
-   if (!firstRun || firstRun === 0) {
-      licWrite(scriptKey + "_first", String(nowDays));
-      firstRun = nowDays;
+// ── Trial ──────────────────────────────────────────────────
+function licTrialDaysLeft() {
+   var stored = Settings.read(LIC_TRIAL_KEY, 13);
+   if (stored === null || stored === undefined) {
+      Settings.write(LIC_TRIAL_KEY, 13, new Date().getTime().toString());
+      return LIC_TRIAL_DAYS;
    }
-   var elapsed = nowDays - firstRun;
-   var remaining = AMC_TRIAL_DAYS - elapsed;
-
-   if (remaining > 0) return { ok: true, mode: "trial", remaining: remaining };
-   return { ok: false, mode: "expired" };
+   var startMs = parseFloat(stored);
+   if (isNaN(startMs)) {
+      Settings.write(LIC_TRIAL_KEY, 13, new Date().getTime().toString());
+      return LIC_TRIAL_DAYS;
+   }
+   return Math.max(0, Math.floor(LIC_TRIAL_DAYS - (new Date().getTime()-startMs)/86400000));
 }
 
-// ── Activation dialog ────────────────────────────────────────────────────────
-function licShowDialog(scriptName, scriptKey, status) {
-   var hwid = licGetHWID();
+function licIsActivated() {
+   var key = Settings.read(LIC_SETTINGS_KEY, 13);
+   return licValidateKey(key);
+}
+
+function licCheck() {
+   if (licIsActivated()) return "ok";
+   var d = licTrialDaysLeft();
+   return d > 0 ? "trial:" + d : "expired";
+}
+
+// ── License / Activation dialog (works for trial, expired, activated) ─
+function licShowActivationDialog() {
+   var hwid      = licGetHWID();
+   var activated = licIsActivated();
+   var daysLeft  = activated ? -1 : licTrialDaysLeft();
+
    var dlg = new Dialog();
-   dlg.windowTitle = scriptName + " — Activation";
-   dlg.setMinWidth(460);
+   dlg.windowTitle = "AstroMax \u2014 License";
+   dlg.userResizable = false;
 
-   var lblTitle = new Label(dlg);
-   lblTitle.text = "<b>" + scriptName + "</b>";
-   lblTitle.textAlignment = TextAlign_Center;
-
-   var lblStatus = new Label(dlg);
-   if (status.mode === "expired") {
-      lblStatus.text = "Your 30-day free trial has expired.";
+   // Status line
+   var statusTitleLbl = new Label(dlg);
+   if (activated) {
+      statusTitleLbl.text = "\u2705  License activated";
+   } else if (daysLeft > 0) {
+      statusTitleLbl.text = "\u23F3  Trial active \u2014 " + daysLeft + " day" + (daysLeft !== 1 ? "s" : "") + " remaining";
    } else {
-      lblStatus.text = "Trial: " + status.remaining + " day(s) remaining of 30.";
+      statusTitleLbl.text = "\u274C  Trial expired \u2014 activation required";
    }
-   lblStatus.textAlignment = TextAlign_Center;
 
-   // Show HWID so user can send it for key generation
-   var lblHwidInfo = new Label(dlg);
-   lblHwidInfo.text = "Your Machine ID (send this to receive your key):";
+   var msgLbl = new Label(dlg);
+   msgLbl.text = "Send your HWID to the author together with proof of purchase.\nYou will receive a license key by email.";
+   msgLbl.wordWrapping = true; msgLbl.minWidth = 380;
 
-   var edtHWID = new Edit(dlg);
-   edtHWID.text = hwid;
-   edtHWID.readOnly = true;
-   edtHWID.setFixedWidth(320);
+   // HWID display
+   var hwidLbl = new Label(dlg);
+   hwidLbl.text = "Your HWID:";
+   var hwidEdit = new Edit(dlg);
+   hwidEdit.text = hwid; hwidEdit.readOnly = true; hwidEdit.minWidth = 380;
+   hwidEdit.toolTip = "Select all and copy (Ctrl+A, Ctrl+C)";
 
-   var hwidRow = new HorizontalSizer;
-   hwidRow.spacing = 6;
-   hwidRow.add(lblHwidInfo);
-   hwidRow.add(edtHWID);
+   // Key input — hide if already activated
+   var keyLbl = new Label(dlg);
+   keyLbl.text = activated ? "License key (activated):" : "Enter license key:";
+   var keyEdit = new Edit(dlg); keyEdit.minWidth = 380;
+   if (activated) {
+      var storedKey = Settings.read(LIC_SETTINGS_KEY, 13);
+      keyEdit.text = storedKey ? storedKey : "";
+      keyEdit.readOnly = true;
+   }
 
-   var lblInstr = new Label(dlg);
-   lblInstr.text = "Enter your activation key below, or visit astromax.app to purchase.";
-   lblInstr.wordWrapping = true;
-   lblInstr.textAlignment = TextAlign_Center;
+   var feedbackLbl = new Label(dlg);
+   feedbackLbl.text = ""; feedbackLbl.minWidth = 380;
 
-   var lblKey = new Label(dlg);
-   lblKey.text = "Activation Key:";
-   var edtKey = new Edit(dlg);
-   edtKey.setFixedWidth(280);
-   edtKey.placeholderText = "XXXX-XXXX-XXXX-XXXX-XXXX";
-
-   var keyRow = new HorizontalSizer;
-   keyRow.spacing = 6;
-   keyRow.add(lblKey);
-   keyRow.add(edtKey);
-
-   var lblFeedback = new Label(dlg);
-   lblFeedback.text = "";
-   lblFeedback.textAlignment = TextAlign_Center;
-
+   // Buttons
    var btnActivate = new PushButton(dlg);
-   btnActivate.text = "Activate";
-   btnActivate.defaultButton = true;
-
-   var btnTrial = new PushButton(dlg);
-   btnTrial.text = status.mode === "expired" ? "Close" : "Continue Trial";
-
-   var btnRow = new HorizontalSizer;
-   btnRow.spacing = 8;
-   btnRow.addStretch();
-   btnRow.add(btnActivate);
-   btnRow.add(btnTrial);
-
+   btnActivate.text = activated ? "  Re-activate  " : "  Activate  ";
+   btnActivate.enabled = !activated;
    btnActivate.onClick = function() {
-      var k = edtKey.text.trim().toUpperCase();
+      var k = keyEdit.text.trim();
       if (licValidateKey(k)) {
-         licWrite(scriptKey + "_key", k);
-         lblFeedback.text = "Activation successful! Thank you.";
-         dlg.ok();
+         Settings.write(LIC_SETTINGS_KEY, 13, k);
+         feedbackLbl.text = "\u2705  Activated successfully! Close and reopen the script.";
+         btnActivate.enabled = false;
+         keyEdit.readOnly = true;
       } else {
-         lblFeedback.text = "Invalid key — check for typos and try again.";
+         feedbackLbl.text = "\u274C  Invalid key \u2014 make sure you sent the exact HWID above.";
       }
    };
-   btnTrial.onClick = function() {
-      if (status.mode === "expired") dlg.cancel();
-      else dlg.ok();
-   };
 
-   var sizer = new VerticalSizer;
-   sizer.margin = 16;
-   sizer.spacing = 10;
-   sizer.add(lblTitle);
-   sizer.add(lblStatus);
-   sizer.add(hwidRow);
-   sizer.add(lblInstr);
-   sizer.add(keyRow);
-   sizer.add(lblFeedback);
-   sizer.add(btnRow);
-   dlg.sizer = sizer;
+   var btnClose = new PushButton(dlg);
+   btnClose.text = "Close";
+   btnClose.onClick = function() { dlg.ok(); };
 
-   return dlg.execute();
+   var btnRow = new Sizer(false); btnRow.spacing = 6;
+   if (!activated) btnRow.add(btnActivate);
+   btnRow.addStretch(); btnRow.add(btnClose);
+
+   dlg.sizer = new Sizer(true); dlg.sizer.margin = 14; dlg.sizer.spacing = 8;
+   dlg.sizer.add(statusTitleLbl);
+   dlg.sizer.add(msgLbl);
+   dlg.sizer.add(hwidLbl);  dlg.sizer.add(hwidEdit);
+   dlg.sizer.add(keyLbl);   dlg.sizer.add(keyEdit);
+   dlg.sizer.add(feedbackLbl);
+   dlg.sizer.add(btnRow);
+   dlg.adjustToContents();
+   return dlg.execute() === Dialog.Ok;
 }
 
-// ── Entry gate ───────────────────────────────────────────────────────────────
-function licGate(scriptName, scriptKey) {
-   var status = licCheck(scriptKey);
-   if (status.mode === "licensed") return true;
-   if (status.mode === "trial") {
-      if (status.remaining <= 5 || (AMC_TRIAL_DAYS - status.remaining) === 0) {
-         var ok = licShowDialog(scriptName, scriptKey, status);
-         return ok !== 0;
-      }
-      Console.writeln("<br><b>" + scriptName + "</b> — Trial: " + status.remaining + " day(s) remaining. Purchase at astromax.app");
-      return true;
-   }
-   // expired
-   var ok = licShowDialog(scriptName, scriptKey, status);
-   return ok !== 0;
-}
+var AMC_VERSION = "3.7.0";
 
 // ============================================================
 //  HIDDEN WINDOW POOL
@@ -951,7 +920,12 @@ function AstroMaxClarityDialog(){
    this.btnClose=new PushButton(this);this.btnClose.text="Close";
    this.btnClose.onClick=function(){closeAllWins();self.cancel();};
 
+   this.btnLicense=new PushButton(this);this.btnLicense.text="\uD83D\uDD11  License";
+   this.btnLicense.toolTip="Show your HWID and activate license";
+   this.btnLicense.onClick=function(){licShowActivationDialog();};
+
    var btnRow=new Sizer(false);btnRow.spacing=6;
+   btnRow.add(this.btnLicense);
    btnRow.add(this.btnReset);btnRow.add(this.btnApply);
    btnRow.addStretch();
    btnRow.add(this.btnCreate);btnRow.add(this.btnClose);
@@ -1005,11 +979,20 @@ AstroMaxClarityDialog.prototype.doRefresh=function(){
    this.busy=false;
 };
 
-function main(){
+function main() {
    Console.hide();
-   if (!licGate("AstroMax Clarity", "AstroMaxClarity")) return;
-   var dlg=new AstroMaxClarityDialog();
-   if(!dlg.srcView){Console.criticalln("AstroMaxClarity: No open images found.");return;}
+   var lic = licCheck();
+   if (lic === "expired") {
+      if (!licShowActivationDialog()) return;
+   }
+   var dlg = new AstroMaxClarityDialog();
+   if (dlg.srcView === undefined || dlg.srcView === null) {
+      // Mono has no srcView check, skip
+   }
+   if (lic.indexOf("trial:") === 0) {
+      var daysLeft = parseInt(lic.split(":")[1]);
+      dlg.windowTitle = dlg.windowTitle + "  •  Trial: " + daysLeft + " day" + (daysLeft !== 1 ? "s" : "") + " left";
+   }
    dlg.execute();
 }
 
